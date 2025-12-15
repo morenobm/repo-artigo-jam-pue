@@ -1,0 +1,362 @@
+---
+title: "Análise fenotípica"
+author: "Bruna Marques Moreno"
+date: "2024-09-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set#(echo = TRUE)
+```
+
+```{r}
+rm(list=ls())
+
+#Entrandos dados
+dados <- read.csv2("~/Documents/Bruna/puebla-jamapa/phenotypic_analysis/phenotype_jxp.csv")
+
+dados$gen <- as.factor(dados$gen)
+dados$block <- as.factor(dados$block)
+dados$testemunha <- as.factor(dados$testemunha)
+#dados <- dados %>% filter(!dados$block %in% "2") %>% droplevels()
+summary(dados)
+str(dados)
+
+```
+
+```{r}
+# Carregando os pacotes
+pkg = c("lme4", "readxl", "tidyverse", 'dplyr', 'MASS', 'asreml')
+sapply(pkg, require, character.only=TRUE)
+
+
+####NMO
+
+dados <- dados %>% filter(!is.na(dados$nmo)) %>% droplevels()
+summary(dados)
+```
+
+Resumo das Diferenças:
+Estrutura	Interpretação	Componentes no Modelo
+bloco/rep	Replicações estão aninhadas dentro de blocos. Replicações em blocos diferentes são independentes.	bloco e bloco
+bloco*rep	Há uma interação entre blocos e replicações, ou seja, o efeito de replicação depende do bloco.	bloco, rep, bloco
+Use bloco/rep quando as replicações não são comparáveis entre blocos (aninhamento).
+Use bloco*rep quando você quer testar se há uma interação entre blocos e replicações, ou seja, se o efeito de replicação varia entre blocos.
+
+```{r}
+#-- Com sommer --#
+
+library(sommer)
+modelo_blocoxrep <- mmer(nmo ~ testemunha,
+                  random = ~ gen + block*rep,
+                  rcov= ~ units,
+                  data = dados,
+                  verbose = TRUE)
+
+summary(modelo_blocoxrep) 
+anova(modelo_blocoxrep)
+plot(modelo_blocoxrep)
+
+# EBLUPs
+randef(modelo_blocoxrep)
+modelo_blocoxrep$U # efeitos aleatórios
+
+# EBLUES
+coef(modelo_blocoxrep) # efeitos fixos   
+modelo_blocoxrep$Beta
+
+# Valores preditos
+(modelo_blocoxrep.pred <- predict.mmer(object = modelo_blocoxrep, classify = "Genotipo", D = "gen"))
+valores_preditos_nmo_blocoxrep <- (modelo_blocoxrep.pred$pvals) # valores preditos
+fitted(modelo_blocoxrep)
+save(valores_preditos_nmo_blocoxrep,
+     file = "~/Documents/Bruna/puebla-jamapa/phenotypic_analysis/valores_preditos_nmo_blocoxrep.RData")
+
+order(modelo_blocoxrep.pred$pvals$predicted.value, decreasing = TRUE)
+write.csv2(modelo_blocoxrep.pred$pvals, file = '~/Documents/Bruna/puebla-jamapa/phenotypic_analysis/blups_nmo_blocoxrep_jxp.csv', col.names = TRUE)
+```
+
+```{r}
+library(sommer)
+modelo_bloco_rep <- mmer(nmo ~  testemunha,
+                  random = ~ block/rep + gen ,
+                  rcov= ~ units,
+                  data = dados,
+                  verbose = TRUE)
+
+save (modelo_bloco_rep, file = "blups.RData")
+load ("blups.RData")
+summary(modelo_bloco_rep) 
+anova(modelo_bloco_rep)
+plot(modelo_bloco_rep)
+
+# EBLUPs
+randef(modelo_bloco_rep)
+modelo_bloco_rep$U # efeitos aleatórios
+
+# EBLUES
+coef(modelo_bloco_rep) # efeitos fixos   
+modelo_bloco_rep$Beta
+
+# Valores preditos
+(modelo_bloco_rep.pred <- predict.mmer(object = modelo_bloco_rep, classify = "Genotipo", D = "gen"))
+valores_preditos_nmo_bloco_rep <- (modelo_bloco_rep.pred$pvals) # valores preditos
+fitted(modelo_bloco_rep)
+save(valores_preditos_nmo_bloco_rep,
+     file = "~/Documents/Bruna/puebla-jamapa/phenotypic_analysis/valores_preditos_nmo_bloco_rep.RData")
+
+order(modelo_bloco_rep.pred$pvals$predicted.value, decreasing = TRUE)
+write.csv2(modelo_bloco_rep.pred$pvals, file = '~/Documents/Bruna/puebla-jamapa/phenotypic_analysis/blups_nmo_bloco_rep_jxp.csv', col.names = TRUE)
+#Componentes de variância
+(summary(modelo_bloco_rep)$varcomp)
+# Extrair os resíduos do modelo
+residuos <- modelo_bloco_rep$residuals
+
+# Aplicar o teste de Shapiro-Wilk nos resíduos
+shapiro.test(residuos)
+
+```
+
+```{r}
+
+#herdabilidade nmo
+#Arrumando as variâncias de cada blup para calcular sua média 
+std.error2 <- valores_preditos_nmo_bloco_rep$std.error^2
+
+#tirando os valores dos pais
+# Remove as linhas 3, 5 e 7 do dataframe
+std.error2 <- std.error2[-c(1,2,3,368)]
+
+#Média das variâncias 
+med_var_blup <- mean(std.error2)
+
+#variânia genética
+var_components_nmo <- summary(modelo_bloco_rep)$varcomp
+sigma2_g_nmo <- var_components_nmo[2,1]
+
+# Calcular a herdabilidade de Cullis
+H2_Cullis_nmo <- 1 - (med_var_blup / (2*sigma2_g_nmo))
+
+# Exibir o resultado
+H2_Cullis_nmo
+```
+```{r}
+#Código do cara da internet https://github.com/PaulSchmidtGit/Heritability/blob/master/Alternative%20Heritability%20Measures/sommer/H2%20Cullis.R
+
+vc_g     <- modelo_bloco_rep %>% pluck("sigma") %>% pluck("gen") %>% as.numeric                # genetic variance component
+n_g      <- modelo_bloco_rep %>% pluck("U")     %>% pluck("gen") %>% pluck("nmo") %>% length # number of genotypes
+C22_g    <- modelo_bloco_rep %>% pluck("PevU")  %>% pluck("gen") %>% pluck("nmo")            # Prediction error variance matrix for genotypic BLUPs
+trC22_g  <- psych::tr(as.matrix(C22_g))                                                                                             # trace
+vdBLUP_g <- 2/n_g * (trC22_g - (sum(C22_g)-trC22_g) / (n_g-1))                                                    # Mean variance of a difference between genotypic BLUPs
+
+H2Cullis <- 1-(vdBLUP_g / 2 / vc_g) 
+H2Cullis
+```
+
+
+```{r}
+#CVg (%)
+
+gen_var <- sqrt(sigma2_g_nmo)
+mean_nmo <- modelo_bloco_rep.pred$pvals$predicted.value
+mean_nmo <- mean_nmo[-c(1,2,3,368)]
+mean_nmo <- mean(mean_nmo)
+cv_nmo <- gen_var/mean_nmo; cv_nmo
+
+```
+
+
+```{r}
+modelo_bloco <- mmer(nmo ~  1,
+                  random = ~ rep + gen ,
+                  rcov= ~ units,
+                  data = dados,
+                  verbose = TRUE)
+
+summary(modelo_bloco) 
+anova(modelo_bloco)
+plot(modelo_bloco)
+
+# EBLUPs
+randef(modelo_bloco)
+modelo_bloco$U # efeitos aleatórios
+
+# EBLUES
+coef(modelo_bloco) # efeitos fixos   
+modelo_bloco$Beta
+
+# Valores preditos
+(modelo_bloco.pred <- predict.mmer(object = modelo_bloco, classify = "Genotipo", D = "gen"))
+valores_preditos_nmo_bloco <- (modelo_bloco.pred$pvals) # valores preditos
+fitted(modelo_bloco)
+save(valores_preditos_nmo_bloco,
+     file = "~/Documents/Bruna/puebla-jamapa/phenotypic_analysis/valores_preditos_nmo_bloco.RData")
+
+
+order(modelo_bloco.pred$pvals$predicted.value, decreasing = TRUE)
+write.csv2(modelo_bloco.pred$pvals, file = '~/Documents/Bruna/puebla-jamapa/phenotypic_analysis/blups_nmo_bloco_jxp.csv', col.names = TRUE)
+```
+
+
+##Agora para o índice de galhas
+
+
+```{r}
+####IG
+library(sommer)
+modelo_blocoxrep_ig <- mmer(ig ~ testemunha,
+                  random = ~ gen + block*rep,
+                  rcov= ~ units,
+                  data = dados,
+                  verbose = TRUE)
+
+summary(modelo_blocoxrep_ig) 
+anova(modelo_blocoxrep_ig)
+plot(modelo_blocoxrep_ig)
+
+# EBLUPs
+randef(modelo_blocoxrep_ig)
+modelo_blocoxrep_ig$U # efeitos aleatórios
+
+# EBLUES
+coef(modelo_blocoxrep_ig) # efeitos fixos   
+modelo_blocoxrep_ig$Beta
+
+# Valores preditos
+(modelo_blocoxrep_ig.pred <- predict.mmer(object = modelo_blocoxrep_ig, classify = "Genotipo", D = "gen"))
+valores_preditos_ig_blocoxrep <- (modelo_blocoxrep_ig.pred$pvals) # valores preditos
+fitted(modelo_blocoxrep_ig)
+save(valores_preditos_ig_blocoxrep,
+     file = "~/Documents/Bruna/puebla-jamapa/phenotypic_analysis/valores_preditos_ig_blocoxrep.RData")
+
+order(modelo_blocoxrep_ig.pred$pvals$predicted.value, decreasing = TRUE)
+write.csv2(modelo_blocoxrep_ig.pred$pvals, file = '~/Documents/Bruna/puebla-jamapa/phenotypic_analysis/blups_ig_blocoxrep_jxp.csv', col.names = TRUE)
+```
+
+```{r}
+library(sommer)
+modelo_bloco_rep_ig <- mmer(ig ~  testemunha,
+                  random = ~ block/rep + gen ,
+                  rcov= ~ units,
+                  data = dados,
+                  verbose = TRUE)
+
+summary(modelo_bloco_rep_ig) 
+anova(modelo_bloco_rep_ig)
+plot(modelo_bloco_rep_ig)
+
+# EBLUPs
+randef(modelo_bloco_rep_ig)
+modelo_bloco_rep_ig$U # efeitos aleatórios
+
+# EBLUES
+coef(modelo_bloco_rep_ig) # efeitos fixos   
+modelo_bloco_rep_ig$Beta
+
+# Valores preditos
+(modelo_bloco_rep_ig.pred <- predict.mmer(object = modelo_bloco_rep_ig, classify = "Genotipo", D = "gen"))
+valores_preditos_ig_bloco_rep <- (modelo_bloco_rep_ig.pred$pvals) # valores preditos
+fitted(modelo_bloco_rep_ig)
+save(valores_preditos_ig_bloco_rep,
+     file = "~/Documents/Bruna/puebla-jamapa/phenotypic_analysis/valores_preditos_ig_bloco_rep.RData")
+
+order(modelo_bloco_rep_ig.pred$pvals$predicted.value, decreasing = TRUE)
+write.csv2(modelo_bloco_rep_ig.pred$pvals, file = '~/Documents/Bruna/puebla-jamapa/phenotypic_analysis/blups_ig_bloco_rep_jxp.csv', col.names = TRUE)
+
+#Componentes de variância
+(summary(modelo_bloco_rep_ig)$varcomp)
+
+# Extrair os resíduos do modelo
+residuos_ig <- modelo_bloco_rep_ig$residuals
+
+# Aplicar o teste de Shapiro-Wilk nos resíduos
+shapiro.test(residuos_ig)
+shapiro.test(modelo_bloco_rep_ig.pred$pvals$predicted.value)
+```
+
+```{r}
+#herdabilidade ig
+#Arrumando as variâncias de cada blup para calcular sua média 
+std.error2 <- valores_preditos_ig_bloco_rep$std.error^2
+
+#tirando os valores dos pais
+std.error2 <- std.error2[-c(1,2,3,368)]
+
+#Média das variâncias 
+med_var_blup <- mean(std.error2)
+
+#variânia genética
+var_components_ig<- summary(modelo_bloco_rep_ig)$varcomp
+sigma2_g_ig <- var_components_ig[2,1]
+
+# Calcular a herdabilidade de Cullis
+H2_Cullis_ig <- 1 - (med_var_blup / (2*sigma2_g_ig))
+
+# Exibir o resultado
+H2_Cullis_ig
+```
+```{r}
+#herdabilidade de Cullis calculada com um código da internet
+
+vc_g     <- modelo_bloco_rep_ig %>% pluck("sigma") %>% pluck("gen") %>% as.numeric                # genetic variance component
+n_g      <- modelo_bloco_rep_ig %>% pluck("U")     %>% pluck("gen") %>% pluck("ig") %>% length # number of genotypes
+C22_g    <- modelo_bloco_rep_ig %>% pluck("PevU")  %>% pluck("gen") %>% pluck("ig")            # Prediction error variance matrix for genotypic BLUPs
+trC22_g  <- psych::tr(as.matrix(C22_g))                                                                                             # trace
+vdBLUP_g <- 2/n_g * (trC22_g - (sum(C22_g)-trC22_g) / (n_g-1))                                                    # Mean variance of a difference between genotypic BLUPs
+
+H2Cullis <- 1-(vdBLUP_g / 2 / vc_g) 
+H2Cullis
+
+```
+```{r}
+#CVg (%) -ig
+
+gen_var <- sqrt(sigma2_g_ig)
+mean_ig <- modelo_bloco_rep_ig.pred$pvals$predicted.value
+mean_ig <- mean_ig[-c(1,2,3,368)]
+mean_ig <- mean(mean_ig)
+cv_ig <- gen_var/mean_ig; cv_ig
+
+```
+
+#####
+
+Análise geral
+```{r}
+resumo <- summary(modelo_bloco_rep.pred$pval); resumo
+resumo_ig <- summary(modelo_bloco_rep_ig.pred$pval); resumo_ig
+
+```
+
+```{r}
+#Correlação de pearson
+install.packages("GGally")  # Para gráficos de correlação detalhados
+install.packages("corrplot") # Para gráficos de matriz de correlação
+
+library(ggplot2)
+library(GGally)
+library(corrplot)
+
+# Gráfico de dispersão com linha de tendência e detalhes
+ggplot(df, aes(x = x, y = y)) +
+  geom_point(color = "blue", size = 3, alpha = 0.6) +  # Pontos de dispersão
+  geom_smooth(method = "lm", color = "red", se = TRUE) +  # Linha de tendência
+  labs(title = "Correlação de Pearson entre X e Y", 
+       subtitle = paste("Coeficiente de correlação:", round(cor(x, y), 2)),
+       x = "Variável X", 
+       y = "Variável Y") +
+  theme_minimal() +  # Tema limpo
+  theme(plot.title = element_text(hjust = 0.5, size = 16, face = "bold"))
+
+# Calculando a matriz de correlação
+cor_matrix <- cor(df)
+
+# Gráfico da matriz de correlação com detalhes
+corrplot(cor_matrix, method = "color", type = "upper", order = "hclust",
+         addCoef.col = "black", # Adiciona os valores da correlação
+         tl.col = "black", tl.srt = 45, # Rotação e cor dos nomes das variáveis
+         col = colorRampPalette(c("blue", "white", "red"))(200),
+         title = "Matriz de Correlação", mar=c(0,0,1,0))
+
+```
+

@@ -1,0 +1,546 @@
+---
+title: "QTL mapping"
+author: "Bruna Marques Moreno"
+date: "2024-09-02"
+output:
+  html_document: default
+    kepp_md: yes
+  pdf_document: default
+  word_document: default
+---
+
+Mapeamento de QTL me baseando no script da Cris e do grupo dela. Colocando algumas informações interessantes
+
+##Fazendo para número de massas de ovos
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = "png",
+                      dpi = 300)
+library(qtl)
+library(knitr)
+library(dplyr)
+```
+
+```{r}
+# Verifique se os arquivos existem
+file.exists("C:\\Users\\bruna\\Documents\\Mestrado\\Artigo\\artigo-jamapa-puebla\\análise original da dissertação\\geno_4_1000_5.csv")
+file.exists("~/Documents/Bruna/puebla-jamapa/pxj_pheno_4_1000_5.csv")
+
+
+#Carregando os dados genotípicos e fenotípicos
+mimulus.qtl <- read.cross("csvs", 
+                          dir = "C:\\Users\\bruna\\Documents\\Mestrado\\Artigo\\artigo-jamapa-puebla\\análise original da dissertação", 
+                          genfile = "geno_4_1000_5.csv", 
+                          phefile = "pxj_pheno_4_1000_5.csv", 
+                          genotypes = c("A", "H", "B"))
+
+mimulus.qtl <- jittermap(mimulus.qtl)
+summary(mimulus.qtl)
+plot(mimulus.qtl)
+
+pheno1 <- plotPheno(x = mimulus.qtl, 
+                    pheno.col = mimulus.qtl$pheno$nmo)
+
+pheno2 <- plotPheno(x = mimulus.qtl, 
+                    pheno.col = mimulus.qtl$pheno$ig)
+
+plot(pheno1, col = "darkblue", xlab = "Number of egg mass")
+plot(pheno1, col = "darkgreen", xlab = "Number of egg mass")
+```
+
+```{r}
+# Cálculo da correlação de Pearson
+x <- mimulus.qtl$pheno$nmo
+y <- mimulus.qtl$pheno$ig
+correlacao_pearson <- cor(y, x, method = "pearson", use = "complete.obs")
+print(correlacao_pearson)
+cor.test(x, y)
+```
+
+# Número de massas de ovos
+## Mapeando QTLs pelo Método de Mapeamento por Intervalo
+```{r}
+#Inputação de genótipo
+set.seed(22334455)
+mimulus.qtl <- fill.geno(mimulus.qtl)
+
+#Calculando o genótipo do QTL
+set.seed(22334455)
+mimulus.qtl.prob <- calc.genoprob(mimulus.qtl, step = 1, map.function = "kosambi", stepwidth = "fixed")
+
+set.seed(22334455)
+mimulus.sim <- sim.geno(mimulus.qtl.prob, n.draws = 550, step = 1, map.function = "kosambi")
+#Escaneando o genoma em busca de QTL Haley-Knott
+scan_result_hk <- scanone(mimulus.sim, method = "hk", pheno.col = mimulus.qtl$pheno$nmo)
+summary(scan_result_hk)
+plot(scan_result_hk)
+
+# Calculando o limiar
+set.seed(22334455)
+operm.hk <- scanone(mimulus.sim, method="hk", n.perm=1000, pheno.col = mimulus.qtl$pheno$nmo)
+summary(operm.hk)
+max(operm.hk) #para ver o maior pico, em qual cromossomo está
+#perform a permutation test to get a genome-wide LOD significance threshold
+threshold_im <- summary(operm.hk, alpha = 0.05)
+threshold_im <- as.numeric(threshold_im)
+
+png("lod_im.png")
+plot(scan_result_hk); abline(h = threshold_im, col = "darkred")
+dev.off() 
+
+#intervalo de confiança
+intervalo <- lodint(scan_result_hk, chr=1, drop=1)
+knitr::kable(intervalo)
+
+# Localização dos QTLs no mapa
+QTLs <- summary(scan_result_hk, threshold = threshold_im)
+
+qtlsim <- makeqtl(mimulus.sim, chr = QTLs$chr, pos = QTLs$pos, what="prob")
+model1 <- fitqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$nmo,  qtl = qtlsim, get.ests = TRUE)
+summary(model1)
+resumo <- summary(model1)
+  
+IM_QTLs <- data.frame("marcador"= rownames(QTLs),"cromossomo"= QTLs$chr, "posição" = QTLs$pos, "LOD" = QTLs$lod, 
+                      "efeito aditivo" = resumo$ests[2,1], "efeito de dominância"= resumo$ests[3,1], "R^2" = resumo$result.full[1,5])
+IM_QTLs
+#Intervalo do QTL - marcadores flanqueadores
+flank_qtl_im <- find.flanking(mimulus.sim, 1, 5); flank_qtl_im
+
+png("map_qtl.png_im.png", width = 900, height = 600, res = 72)
+plot(qtlsim)
+dev.off()
+
+pico <- find.marker(mimulus.qtl.prob, QTLs$chr, QTLs$pos); pico
+
+png("mkr_im.png")
+effect <- effectplot(mimulus.sim, mname1=pico, draw=TRUE, pheno.col = mimulus.qtl$pheno$nmo)
+dev.off()
+
+png("allele_im.png")
+plotPXG(mimulus.qtl.prob, marker = pico, pheno.col = mimulus.qtl$pheno$nmo, ylab = "Número de massas de ovos")
+dev.off()
+```
+
+Nesse mapa eu consegui achar 180 genes no intervalo do QTl (Chr01_2340316 - Chr01_4428849) pelo NCBI, preciso avaliar que tipo de genes são esses.
+
+
+Mapeando os QTLs pelo método de Mapeamento por Intervalo Composto (CIM)
+
+```{r}
+set.seed(22334455)
+mimulus.qtl.prob<- calc.genoprob(mimulus.qtl, step = 1, map.function = "kosambi", stepwidth = "fixed")
+#Probabilidade condicional dos genótipos para cada posição
+#Simulação de cada marcador
+set.seed(22334455)
+mimulus.sim <- sim.geno(mimulus.qtl.prob, n.draws = 550, step=1, map.function = "kosambi", stepwidth = "fixed")
+
+# Executa a análise stepwise para identificar os QTLs
+set.seed(22334455)
+stepwise_result <- stepwiseqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$nmo, method = "hk", model = "normal", refine.locations = TRUE)
+
+# Resumo dos QTLs encontrados
+summary(stepwise_result)
+
+stepwise_qtl <- data.frame ("name" = c("1@4.0", "2@10.0", "2@79.9", "2@94.0", "2@107.6", "4.2@3.3", "7@130.0", "9@58.0", "10@0.0", "11@56.8"),
+                            "chr" = c(1,2,2,2,2,4.2,7,9, 10,11),
+                            "pos" = c(5,10,79.8,94.04,107.62,3.3,130,58,0,56.8))
+stepwise_qtls <- makeqtl(mimulus.sim, chr = stepwise_qtl$chr, pos = stepwise_qtl$pos, qtl.name = stepwise_qtl$name, what = "prob")
+fit <- fitqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$nmo, model = "normal", qtl = stepwise_qtls, method = "imp", get.ests = TRUE)
+summary(fit)
+#Fazendo uma análise dos QTLs que tem maior efeito, dois deles não foram adicionados no modelo final por ter pvalue mais alto e R2 bem baixo, quase zero. Desse jeito eu vou testar de colocar apenas aqueles QTLs que tem maior valor e que provavelmente mudam coisas.
+
+stepwise_qtl_2 <- data.frame ("name" = c("1@4.0", "2@76.2", "4.2@3.0", "7@133.0", "8@51", "9@47"),
+                            "chr" = c(1,2,4.2,7,8, 9),
+                            "pos" = c(4,76.2,3,133,51,47))
+stepwise_qtls_2 <- makeqtl(mimulus.sim, chr = stepwise_qtl$chr, pos = stepwise_qtl$pos, qtl.name = stepwise_qtl$name, what = "prob")
+fit <- fitqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$nmo, model = "normal", qtl = stepwise_qtls, method = "hk", get.ests = TRUE)
+summary(fit)
+
+stepwise_qtl <- data.frame ("name" = c("1@5.0", "2@75.0", "3.2@7.0", "4.2@3.0", "7@133.0", "8@80.3"),
+                            "chr" = c(1,2,3.2,4.2,7,8),
+                            "pos" = c(4,75,7,3,133,80.301))
+stepwise_qtls <- makeqtl(mimulus.sim, chr = stepwise_qtl$chr, pos = stepwise_qtl$pos, qtl.name = stepwise_qtl$name, what = "prob")
+fit_2 <- fitqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$nmo, model = "normal", qtl = stepwise_qtls, method = "imp", get.ests = TRUE)
+summary(fit_2)
+#Fazendo uma análise dos QTLs que tem maior efeito, dois deles não foram adicionados no modelo final por ter pvalue mais alto e R2 bem baixo, quase zero. Desse jeito eu vou testar de colocar apenas aqueles QTLs que tem maior valor e que provavelmente mudam coisas.
+#################################3
+##testes feitos depois de escrever que podem estar certos ou não!!
+teste_apagar_depois <- data.frame ("name" = c("1@5.0", "2@11.0", "2@79.9", "2@95.0", "4.2@3.3", "7@130.0", "9@58.0", "10@0.0"),
+                            "chr" = c(1,2,2,2,4.2,7,9,10),
+                            "pos" = c(5,11,79.9,95,3.3,130,58,0))
+
+teste_apagar_qtls <- makeqtl(mimulus.sim, chr = teste_apagar_depois$chr, pos = teste_apagar_depois$pos, qtl.name = teste_apagar_depois$name, what = "prob")
+fit_2 <- fitqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$nmo, model = "normal", qtl = teste_apagar_qtls, method = "imp", get.ests = TRUE)
+summary(fit_2)
+
+#refinando os qtls
+qtl_ref <- refineqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$nmo, qtl = teste_apagar_qtls, method = "hk", model = "normal")
+summary(qtl_ref)
+
+#Marcadores que estão nos picos dos QTLs mapeados
+picos <- find.marker(mimulus.sim, c(1,4.2,7,9), c(5, 3.3,132.5,50)); picos
+
+##########################################
+#CIM
+cim_result <- cim(mimulus.sim, pheno.col= mimulus.qtl$pheno$nmo, n.marcovar=6, method="hk", window = 10, map.function = "kosambi")
+#Setando o limiar
+threshold.cim <- cim(mimulus.sim, pheno.col= mimulus.qtl$pheno$nmo, n.marcovar=6, method="hk", window = 10, n.perm = 1000, map.function = "kosambi")
+summary(threshold.cim)
+LOD <- summary(threshold.cim, alpha = 0.05)
+LOD <- as.numeric(LOD)
+
+#Resultado do cim com o threshold marcado
+plot(cim_result); abline(h=LOD, col = "darkred")
+
+png("lod_cim.png")
+plot(cim_result, col = "darkblue"); add.cim.covar(cim_result, col = "green"); abline(cim_result, h = LOD, col = "darkred")
+dev.off()
+
+#Dados dos QTL mapeados 
+QTls <- summary(cim_result, threshold = LOD); QTls
+
+#Transformando os dados em posição certinha do QTL
+qtl_data <- makeqtl(mimulus.sim, chr = QTls$chr, pos = QTls$pos);qtl_data; 
+
+refined <- refineqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$nmo, qtl = qtl_data, method = "hk", model = "normal")
+summary(refined)
+#QTL disposto no mapa genético
+png("mapa_qtl.png")
+plot(qtl_data)
+dev.off()
+
+#refinando os qtls
+qtl_ref <- refineqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$nmo, qtl = stepwise_qtls_2, method = "hk", model = "normal")
+summary(qtl_ref)
+#Marcadores que estão nos picos dos QTLs mapeados
+picos <- find.marker(mimulus.sim, c(1), c(6))
+
+#Intervalo de confiança de 1 LOD
+intervalo_1 <- lodint(cim_result, 1, drop = 1)
+
+#Efeitos genéticos do QTL
+model <- fitqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$nmo, qtl = qtl_data, get.ests = TRUE)
+resumo <- summary(model)
+modelo_2 <- fitqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$nmo, qtl = qtl_ref, get.ests = TRUE)
+resumo_2 <- summary(modelo_2)
+
+CIM_QTL <- data.frame("marcador" = rownames(QTls), "cromossomo" = QTls$chr, "posição" = QTls$pos,
+                     "LOD" = QTls$lod, "efeito aditivo" = resumo$est[2,1], "efeito de dominância" = resumo$est[3,1],
+                     "R^2" = resumo$result.full[1,5])
+knitr::kable(CIM_QTL)
+
+#Intervalo do QTL - marcadores flanqueadores
+flank_qtl_cim <- find.flanking(mimulus.qtl.prob, c(1), c(6)); flank_qtl_cim
+
+##efeitos dos genótipos
+efeitos_gen <- list()
+efeitos_letras <- list()
+
+for (i in 1:length(picos)) {
+  # Salva a primeira imagem (efeitos_gen)
+  filename_gen <- paste0("~/Documents/Bruna/qtl/plots/efeito_gen_", i, ".png")
+  png(filename = filename_gen, width = 800, height = 600)
+  efeitos_gen[[i]] <- effectplot(mimulus.sim, mname1 = picos[i], draw=TRUE, pheno.col = mimulus.qtl$pheno$nmo)
+  dev.off()  # Fecha o dispositivo gráfico para a primeira imagem
+  
+  # Salva a segunda imagem (efeitos_letras)
+  filename_letras <- paste0("~/Documents/Bruna/qtl/plots/efeito_letras_", i, ".png")
+  png(filename = filename_letras, width = 800, height = 600)
+  efeitos_letras[[i]] <- plotPXG(mimulus.sim, marker = picos[i], pheno.col = mimulus.qtl$pheno$nmo, ylab = "Número de massas de ovos")
+  dev.off()  # Fecha o dispositivo gráfico para a segunda imagem
+}
+
+
+# Chromosomos que tem o pico -arrumar por ÚLTIMO, AINDA ESTOU AVALIANDO
+png("cim_lod.png")
+plot(scan_result_hk,col="blue", chr = 1, ylim = c(0,9), xlab = "Chromosome 1 - Map position (cM)");
+plot(cim_result,  col= "red", chr = c(1), add = TRUE);
+add.cim.covar(cim_result, col="green")
+abline(h=LOD, col = "darkred");
+abline(h=threshold_im, col = "darkblue")
+dev.off()
+
+plot(scan_result_hk,col="blue", chr = c(1), ylim = c(0,6));
+plot(cim_result,  col= "red", chr = c(1), add = TRUE);
+add.cim.covar(cim_result, col="green")
+abline(h=LOD, col = "darkred");
+abline(h=threshold_im, col = "darkblue")
+```
+### Mapeamento de intervalos Múltiplos
+
+```{r}
+#Carregando os dados genotípicos e fenotípicos
+mimulus.qtl <- read.cross("csvs", dir = "~/Documents/Bruna/puebla-jamapa", genfile = "geno_4_1000_5.csv", 
+                       phefile = "pxj_pheno_4_1000_5.csv", genotypes = c("A", "H", "B"))
+
+mimulus.qtl <- jittermap(mimulus.qtl)
+
+#Inputação de genótipo
+set.seed(22334455)
+mimulus.qtl <- fill.geno(mimulus.qtl)
+
+#Calculando o genótipo do QTL
+set.seed(22334455)
+mimulus.qtl.prob <- calc.genoprob(mimulus.qtl, step = 1, map.function = "kosambi", stepwidth = "fixed")
+set.seed(22334455)
+mimulus.sim <- sim.geno(mimulus.qtl.prob, n.draws = 1000, step = 1, map.function = "kosambi")
+
+#Avalaindo o genoma por completo com uma análise bi-dimensional
+set.seed(22334455)
+scanbi <- scantwo(mimulus.sim, method = "hk", pheno.col = mimulus.qtl$pheno$nmo, use = "complete.obs")
+plot(scanbi)
+
+#imagem
+png(filename = "scanbi.png", width = 800, height = 600)
+plot(scanbi)
+dev.off()
+
+#Resultados
+table1 <- data.frame(summary(scanbi))
+knitr::kable(table1)
+write.table(table1, file = "lods_mim.csv", sep = ",", dec = ".")
+
+#plotando o gráfico das interações
+plot(scanbi, col.scheme = "redblue")
+
+#Calculando o LOD com permutações 
+threshold_mim <- scantwo(mimulus.sim, method = "hk", pheno.col = mimulus.qtl$pheno$nmo, n.perm = 1000)
+threshold_mim <- scantwo(mimulus.sim, method = "em", pheno.col = mimulus.qtl$pheno$nmo, n.perm = 1000) #(isso tá demorando uma eternidade, parei na permutação 81 porque já tinha ido quase 12h rodando)
+summary(threshold_mim, alpha = 0.05)
+
+old.par <- par(mfrow = c(3,2));
+perm_full <- hist(threshold_mim_$full, col = "blue", main = "full"); abline(perm_full, v = threshold_mim_$full[1,1], col = "red", lty=3, lwd=3);
+perm_fv1 <- hist(threshold_mim_$fv1, col = "yellow", main = "fv1");
+abline(perm_fv1, v = threshold_mim_$fv1[1,1], col = "red", lty=3, lwd=3);
+perm_add <- hist(threshold_mim_$add, col = "pink", main = "add");
+abline(perm_add, v = threshold_mim_$add[1,1], col = "red", lty=3, lwd=3);
+perm_av1 <- hist(threshold_mim_$av1, col = "orange", main = "av1");
+abline(perm_av1, v = threshold_mim_$av1[1,1], col = "red", lty=3, lwd=3);
+perm_one <- hist(threshold_mim_$one, col = "green", main = "one");
+abline(perm_one, v = threshold_mim_$one[1,1], col = "red", lty=3, lwd=3);
+par(old.par)
+
+#interações
+qtl1 <- summary(scanbi, perms=threshold_mim, alpha=0.90, pvalues = TRUE); qtl1
+
+```
+
+lod.full -> representa o valor de LOD do modelo completo, com dois qtls aditivos + o efeito da interação entre eles 
+lod.fv1 -> representa o valor de LOD do segundo QTL e da interação entre eles (diferença entre o modelo completo e o modelo simples - qtl aditivo do scanone). CONSIDERA O EFEITO DE EPISTASIA
+lod.int >- representa a diferença entre o modelo completo e o modelo aditivo, ficando apenas o valor da interação entre os qtls.
+lod.add -> lod ado modelo aditivo, qtls sem a interação entre eles.
+lod.av1 -> representa o lod do segundo qtl, porque compara o modelo aditivo com o modelo simples. NÃO CONSIDERA EFEITO DE EPISTASIA.
+
+
+################
+#IG
+```{r}
+#Carregando os dados genotípicos e fenotípicos
+mimulus.qtl <- read.cross("csvs", dir = "~/Documents/Bruna/puebla-jamapa", genfile = "geno_4_1000_5.csv", 
+                       phefile = "pxj_pheno_4_1000_5.csv", genotypes = c("A", "H", "B"))
+
+mimulus.qtl <- jittermap(mimulus.qtl)
+summary(mimulus.qtl)
+plot(mimulus.qtl)
+
+pheno1 <- plotPheno(x = mimulus.qtl, pheno.col = mimulus.qtl$pheno$ig)
+plot(pheno1, col = "darkgreen", xlab = "Number of egg mass")
+```
+## Mapeando QTLs pelo Método de Mapeamento por Intervalo
+```{r}
+#Inputação de genótipo
+set.seed(22334455)
+mimulus.qtl <- fill.geno(mimulus.qtl)
+
+#Calculando o genótipo do QTL
+set.seed(22334455)
+mimulus.qtl.prob <- calc.genoprob(mimulus.qtl, step = 1, map.function = "kosambi", stepwidth = "fixed")
+set.seed(22334455)
+mimulus.sim <- sim.geno(mimulus.qtl.prob, n.draws = 10, step = 1, map.function = "kosambi")
+#Escaneando o genoma em busca de QTL Haley-Knott
+scan_result_hk <- scanone(mimulus.sim, method = "hk", pheno.col = mimulus.qtl$pheno$ig)
+summary(scan_result_hk)
+plot(scan_result_hk)
+
+# Calculando o limiar
+set.seed(22334455)
+operm.hk <- scanone(mimulus.sim, method="hk", n.perm=1000, pheno.col = mimulus.qtl$pheno$ig)
+summary(operm.hk)
+threshold_im <- summary(operm.hk, alpha = 0.1)
+threshold_im <- as.numeric(threshold_im)
+
+png("lod_ig_im.png", width = 900, height = 600, res = 72)
+plot(scan_result_hk); abline(h = threshold_im, col = "darkred")
+dev.off()
+
+##(não tem QTL)
+
+#intervalo de confiança
+#intervalo <- lodint(scan_result_hk, chr=1, drop=1)
+#knitr::kable(intervalo)
+
+# Localização dos QTLs no mapa
+QTLs <- summary(scan_result_hk, threshold = threshold_im)
+#set.seed(1998)
+#qtlsim <- makeqtl(mimulus.sim, chr = QTLs$chr, pos = QTLs$pos, what="prob")
+#model1 <- fitqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$nmo,  qtl = qtlsim, get.ests = TRUE)
+#summary(model1)
+#resumo <- summary(model1)
+  
+#IM_QTLs <- data.frame("marcador"= rownames(QTLs),"cromossomo"= QTLs$chr, "posição" = QTLs$pos, "LOD" = QTLs$lod, 
+                      #"efeito aditivo" = resumo$ests[2,1], "efeito de dominância"= resumo$ests[3,1], "R^2" = resumo$result.full[1,5])
+#IM_QTLs
+#Intervalo do QTL - marcadores flanqueadores
+#flank_qtl_im <- find.flanking(mimulus.qtl.prob, 1, 5.5)
+
+#plot(qtlsim)
+#pico <- find.marker(mimulus.qtl.prob, QTLs$chr, QTLs$pos)
+#effect <- effectplot(mimulus.sim, mname1=pico, draw=TRUE, pheno.col = mimulus.qtl$pheno$nmo)
+#plotPXG(mimulus.qtl.prob, marker = pico, pheno.col = mimulus.qtl$pheno$nmo, ylab = "Número de massas de ovos")
+```
+
+Mapeando os QTLs pelo método de Mapeamento por Intervalo Composto (CIM)
+
+```{r}
+#Carregando os dados genotípicos e fenotípicos
+mimulus.qtl <- read.cross("csvs", dir = "~/Documents/Bruna/puebla-jamapa", genfile = "geno_4_1000_5.csv", 
+                       phefile = "pxj_pheno_4_1000_5.csv", genotypes = c("A", "H", "B"))
+
+mimulus.qtl <- jittermap(mimulus.qtl)
+plot.map(mimulus.qtl)
+
+#Inputação de genótipo
+set.seed(22334455)
+mimulus.qtl <- fill.geno(mimulus.qtl)
+
+#Probabilidade condicional dos genótipos para cada posição
+set.seed(22334455)
+mimulus.qtl.prob <- calc.genoprob(mimulus.qtl, step = 1, map.function = "kosambi", stepwidth = "fixed")
+
+#Simulação de cada marcador
+set.seed(22334455)
+mimulus.sim <- sim.geno(mimulus.qtl.prob, n.draws = 500, step=1, map.function = "kosambi", stepwidth = "fixed") #o n.draws é a quantidade de imputações que vão ser feitas. Se os dados tem bastante coisa faltando, quanto maior o número, melhor.
+
+# Identificando o número de cofatores
+cofator <- stepwiseqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$ig, method = "hk", model = "normal", refine.locations = TRUE, verbose=TRUE)
+cofator <- summary(cofator)
+#CIM
+cim_result <- cim(mimulus.sim, pheno.col= mimulus.qtl$pheno$ig, n.marcovar = 1, method="hk", window = 25, map.function = "kosambi")
+#Setando o limiar
+threshold.cim <- cim(mimulus.sim, pheno.col= mimulus.qtl$pheno$ig, n.marcovar = 1, method="hk", window = 25, n.perm = 1000, map.function = "kosambi")
+summary(threshold.cim)
+LOD <- summary(threshold.cim, alpha = 0.1)
+LOD <- as.numeric(LOD)
+
+#Resultado do cim com o threshold marcado
+png("lod_cim_ig.png", width = 900, height = 600, res = 72)
+plot(cim_result); abline(h=LOD, col = "darkred")
+dev.off()
+
+#Dados dos QTL mapeados 
+#QTls <- summary(cim_result, threshold = LOD); QTls
+
+#Transformando os dados em posição certinha do QTL
+#qtl_data <- makeqtl(mimulus.sim, chr = QTls$chr, pos = QTls$pos);qtl_data; 
+
+#QTL disposto no mapa genético
+#plot(qtl_data)
+
+#Marcadores que estão nos picos dos QTLs mapeados
+#picos <- find.marker(mimulus.sim, c(1,3.2,7), c(68.701,1, 114))
+
+#Intervalo de confiança de 1 LOD
+#intervalo_1 <- lodint(cim_result, 1, drop = 1)
+#intervalo_3.2 <- lodint(cim_result, 3.2, drop = 1)
+#intervalo_7 <- lodint(cim_result, 7, drop = 1)
+
+#Efeitos genéticos do QTL
+#model <- fitqtl(mimulus.sim, pheno.col = mimulus.qtl$pheno$ig, qtl = qtl_data, get.ests = TRUE)
+#resumo <- summary(model)
+
+
+#CIM_QTL <- data.frame("marcador" = rownames(QTls), "cromossomo" = QTls$chr, "posição" = QTls$pos,
+#                     "LOD" = QTls$lod, "efeito aditivo" = resumo$est[c(2,4,6),1], "efeito de dominância" = resumo$est[c(3,5,7),1],
+#                     "R^2" = resumo$result.drop[c(1:3),5])
+#knitr::kable(CIM_QTL)
+
+#Intervalo do QTL - marcadores flanqueadores
+#flank_qtl_cim <- find.flanking(mimulus.qtl.prob, c(1,7), c(68.7, 114))
+
+##efeitos dos genótipos
+#efeitos_gen <- list()
+#for (i in 1:length(picos[,1])) {
+  #filename <- paste0("~/Documents/Bruna/qtl/plots/efeito_gen_", i, ".png")
+  #png(filename = filename, width = 800, height = 600)
+  #efeitos_gen[[i]] <- effectplot(mimulus.sim, mname1 = picos[i,1], draw=TRUE, pheno.col = mimulus.qtl$pheno$ig)
+  #dev.off()
+#}
+
+# Chromosomos que tem o pico -arrumar por ÚLTIMO, AINDA ESTOU AVALIANDO
+
+#plot(scan_result_hk,col="blue", chr = 1, ylim = c(0,6), xlab = "Chromosome 1 - Map position (cM)");
+#plot(cim_result,  col= "red", chr = c(1), add = TRUE);
+#add.cim.covar(cim_result, col="green")
+#abline(h=LOD, col = "darkred");
+#abline(h=threshold_im, col = "darkblue")
+#
+```
+
+### Mapeamento de intervalos Múltiplos
+
+```{r}
+#Carregando os dados genotípicos e fenotípicos
+mimulus.qtl <- read.cross("csvs", dir = "~/Documents/Bruna/puebla-jamapa", genfile = "geno_4_1000_5.csv", 
+                       phefile = "pxj_pheno_4_1000_5.csv", genotypes = c("A", "H", "B"))
+
+mimulus.qtl <- jittermap(mimulus.qtl)
+
+#Inputação de genótipo
+set.seed(22334455)
+mimulus.qtl <- fill.geno(mimulus.qtl)
+
+#Calculando o genótipo do QTL
+set.seed(22334455)
+mimulus.qtl.prob <- calc.genoprob(mimulus.qtl, step = 1, map.function = "kosambi", stepwidth = "fixed")
+set.seed(22334455)
+mimulus.sim <- sim.geno(mimulus.qtl.prob, n.draws = 1000, step = 1, map.function = "kosambi")
+
+#Avalaindo o genoma por completo com uma análise bi-dimensional
+set.seed(22334455)
+scanbi <- scantwo(mimulus.sim, method = "hk", pheno.col = mimulus.qtl$pheno$ig, use = "complete.obs")
+plot(scanbi)
+
+#imagem
+png(filename = "scanbi.png", width = 800, height = 600)
+plot(scanbi)
+dev.off()
+
+#Resultados
+table1 <- data.frame(summary(scanbi))
+knitr::kable(table1)
+write.table(table1, file = "lods_mim.csv", sep = ",", dec = ".")
+
+#plotando o gráfico das interações
+plot(scanbi, col.scheme = "redblue")
+
+#Calculando o LOD com permutações 
+threshold_mim <- scantwo(mimulus.sim, method = "hk", pheno.col = mimulus.qtl$pheno$ig, n.perm = 1000)
+summary(threshold_mim, alpha = 0.1)
+
+old.par <- par(mfrow = c(3,2));
+perm_full <- hist(threshold_mim_$full, col = "blue", main = "full"); abline(perm_full, v = threshold_mim_$full[1,1], col = "red", lty=3, lwd=3);
+perm_fv1 <- hist(threshold_mim_$fv1, col = "yellow", main = "fv1");
+abline(perm_fv1, v = threshold_mim_$fv1[1,1], col = "red", lty=3, lwd=3);
+perm_add <- hist(threshold_mim_$add, col = "pink", main = "add");
+abline(perm_add, v = threshold_mim_$add[1,1], col = "red", lty=3, lwd=3);
+perm_av1 <- hist(threshold_mim_$av1, col = "orange", main = "av1");
+abline(perm_av1, v = threshold_mim_$av1[1,1], col = "red", lty=3, lwd=3);
+perm_one <- hist(threshold_mim_$one, col = "green", main = "one");
+abline(perm_one, v = threshold_mim_$one[1,1], col = "red", lty=3, lwd=3);
+par(old.par)
+
+#interações
+qtl1 <- summary(scanbi, perms=threshold_mim, alpha=0.1, pvalues = TRUE); qtl1
+
+```
+
